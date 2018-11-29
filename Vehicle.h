@@ -42,9 +42,9 @@ const int CTRL_LEFT = 4;
 const int CTRL_RIGHT = 8;
 
 const float YAW_SENSITIVITY = 0.1f;
-const float ENGINE_POWER = 10.0f;
+const float ENGINE_POWER = 500.0f;
 const float DOWN_FORCE = 10.0f;
-const float MAX_WHEEL_ANGLE = 22.5f;
+const float MAX_WHEEL_ANGLE = 45.5f;
 
 /// Vehicle component, responsible for physical movement according to controls.
 class Vehicle : public LogicComponent

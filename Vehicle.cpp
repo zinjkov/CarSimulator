@@ -31,7 +31,7 @@
 #include <Urho3D/Physics/RigidBody.h>
 #include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/Scene/Scene.h>
-
+#include <Urho3D/Physics/RaycastVehicle.h>
 #include "Vehicle.h"
 
 Vehicle::Vehicle(Context* context) :
@@ -127,21 +127,21 @@ void Vehicle::Init()
     StaticModel* hullObject = node_->CreateComponent<StaticModel>();
     hullBody_ = node_->CreateComponent<RigidBody>();
     CollisionShape* hullShape = node_->CreateComponent<CollisionShape>();
-
-    node_->SetScale(Vector3(1.0f, 1.0f, 1.0f));
+//    hullBody_->SetGravityOverride(Vector3(0.0f, -9.0f, 0.0f));
+    node_->SetScale(Vector3(2.0f, 2.0f, 2.0f));
     hullObject->SetModel(cache->GetResource<Model>("Models/Prius.mdl"));
     hullObject->SetMaterial(cache->GetResource<Material>("Materials/Stone.xml"));
     hullObject->SetCastShadows(true);
-    hullShape->SetBox(Vector3(1.0f, 1.0f, 1.0f));
-    hullBody_->SetMass(4.0f);
-    hullBody_->SetLinearDamping(0.2f); // Some air resistance
+    hullShape->SetBox(Vector3(1.2f, 1.0f, 3.1f));
+    hullBody_->SetMass(1350.0f);
+    hullBody_->SetLinearDamping(0.2); // Some air resistance
     hullBody_->SetAngularDamping(0.5f);
     hullBody_->SetCollisionLayer(1);
 
-    InitWheel("FrontLeft", Vector3(-3.6f, -1.6f, 5.5f), frontLeft_, frontLeftID_);
-    InitWheel("FrontRight", Vector3(3.6f, -1.6f, 5.5f), frontRight_, frontRightID_);
-    InitWheel("RearLeft", Vector3(-3.6f, -1.6f, -5.5f), rearLeft_, rearLeftID_);
-    InitWheel("RearRight", Vector3(3.6f, -1.6f, -5.5f), rearRight_, rearRightID_);
+    InitWheel("FrontLeft", Vector3(-0.6f, -0.42f, 0.97f), frontLeft_, frontLeftID_);
+    InitWheel("FrontRight", Vector3(0.6f, -0.42f, 0.97f), frontRight_, frontRightID_);
+    InitWheel("RearLeft", Vector3(-0.6f, -0.42f, -0.99f), rearLeft_, rearLeftID_);
+    InitWheel("RearRight", Vector3(0.6f, -0.42f, -0.99f), rearRight_, rearRightID_);
 
     GetWheelComponents();
 }
@@ -156,8 +156,8 @@ void Vehicle::InitWheel(const String& name, const Vector3& offset, WeakPtr<Node>
     wheelNode->SetPosition(node_->LocalToWorld(offset));
     wheelNode->SetRotation(node_->GetRotation() * (offset.x_ >= 0.0 ? Quaternion(0.0f, 0.0f, -90.0f) :
         Quaternion(0.0f, 0.0f, 90.0f)));
-    int mull = 3;
-    wheelNode->SetScale(Vector3(0.8f * mull, 0.5f* mull, 0.8f* mull));
+    double mull = 0.6 * 2;
+    wheelNode->SetScale(Vector3(0.8f * mull, 0.3f * mull, 0.8f * mull));
     // Remember the ID for serialization
     wheelNodeID = wheelNode->GetID();
 
@@ -171,8 +171,8 @@ void Vehicle::InitWheel(const String& name, const Vector3& offset, WeakPtr<Node>
     wheelObject->SetCastShadows(true);
     wheelShape->SetSphere(1.0f);
     wheelBody->SetFriction(1.0f);
-    wheelBody->SetMass(1.0f);
-    wheelBody->SetLinearDamping(0.2f); // Some air resistance
+    wheelBody->SetMass(3.0f);
+    wheelBody->SetLinearDamping(0.5f); // Some air resistance
     wheelBody->SetAngularDamping(0.75f); // Could also use rolling friction
     wheelBody->SetCollisionLayer(1);
     wheelConstraint->SetConstraintType(CONSTRAINT_HINGE);
