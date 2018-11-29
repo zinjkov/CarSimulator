@@ -132,7 +132,8 @@ void Vehicle::Init()
     hullObject->SetModel(cache->GetResource<Model>("Models/Prius.mdl"));
     hullObject->SetMaterial(cache->GetResource<Material>("Materials/Stone.xml"));
     hullObject->SetCastShadows(true);
-    hullShape->SetBox(Vector3(1.2f, 1.0f, 3.1f));
+//    hullShape->SetBox(Vector3(1.2f, 1.0f, 3.1f));
+    hullShape->SetConvexHull(cache->GetResource<Model>("Models/Prius.mdl"));
     hullBody_->SetMass(1350.0f);
     hullBody_->SetLinearDamping(0.2); // Some air resistance
     hullBody_->SetAngularDamping(0.5f);
