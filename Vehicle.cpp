@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2017 the Urho3D project.
+// Copyright (c) 2008-2018 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,178 +20,246 @@
 // THE SOFTWARE.
 //
 
+#include "Vehicle.h"
 #include <Urho3D/Core/Context.h>
+#include <Urho3D/Graphics/DebugRenderer.h>
+#include <Urho3D/Graphics/DecalSet.h>
 #include <Urho3D/Graphics/Material.h>
 #include <Urho3D/Graphics/Model.h>
+#include <Urho3D/Graphics/ParticleEffect.h>
+#include <Urho3D/Graphics/ParticleEmitter.h>
 #include <Urho3D/Graphics/StaticModel.h>
+#include <Urho3D/IO/Log.h>
 #include <Urho3D/Physics/CollisionShape.h>
 #include <Urho3D/Physics/Constraint.h>
 #include <Urho3D/Physics/PhysicsEvents.h>
 #include <Urho3D/Physics/PhysicsWorld.h>
-#include <Urho3D/Physics/RigidBody.h>
+#include <Urho3D/Physics/RaycastVehicle.h>
 #include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/Scene/Scene.h>
-#include <Urho3D/Physics/RaycastVehicle.h>
-#include "Vehicle.h"
 
-Vehicle::Vehicle(Context* context) :
-    LogicComponent(context),
-    steering_(0.0f)
-{
-    // Only the physics update event is needed: unsubscribe from the rest for optimization
-    SetUpdateEventMask(USE_FIXEDUPDATE);
-}
+using namespace Urho3D;
+
+const float CHASSIS_WIDTH = 2.6f;
 
 void Vehicle::RegisterObject(Context* context)
 {
     context->RegisterFactory<Vehicle>();
-
+    URHO3D_ATTRIBUTE("Steering", float, steering_, 0.0f, AM_DEFAULT);
     URHO3D_ATTRIBUTE("Controls Yaw", float, controls_.yaw_, 0.0f, AM_DEFAULT);
     URHO3D_ATTRIBUTE("Controls Pitch", float, controls_.pitch_, 0.0f, AM_DEFAULT);
-    URHO3D_ATTRIBUTE("Steering", float, steering_, 0.0f, AM_DEFAULT);
-    // Register wheel node IDs as attributes so that the wheel nodes can be reaquired on deserialization. They need to be tagged
-    // as node ID's so that the deserialization code knows to rewrite the IDs in case they are different on load than on save
-    URHO3D_ATTRIBUTE("Front Left Node", unsigned, frontLeftID_, 0, AM_DEFAULT | AM_NODEID);
-    URHO3D_ATTRIBUTE("Front Right Node", unsigned, frontRightID_, 0, AM_DEFAULT | AM_NODEID);
-    URHO3D_ATTRIBUTE("Rear Left Node", unsigned, rearLeftID_, 0, AM_DEFAULT | AM_NODEID);
-    URHO3D_ATTRIBUTE("Rear Right Node", unsigned, rearRightID_, 0, AM_DEFAULT | AM_NODEID);
 }
 
+Vehicle::Vehicle(Urho3D::Context* context)
+    : LogicComponent(context),
+      steering_(0.0f)
+{
+    SetUpdateEventMask(USE_FIXEDUPDATE | USE_POSTUPDATE);
+    engineForce_ = 0.0f;
+    brakingForce_ = 150.0f;
+    vehicleSteering_ = 0.0f;
+    maxEngineForce_ = 3000.0f;
+    wheelRadius_ = 0.5f;
+    suspensionRestLength_ = 0.45f;
+    wheelWidth_ = 0.4f;
+    suspensionStiffness_ = 150.0f;
+    suspensionDamping_ = 1.0f;
+    suspensionCompression_ = 150.0f;
+    wheelFriction_ = 1500.0f;
+    rollInfluence_ = 0.03f;
+    emittersCreated = false;
+}
+
+Vehicle::~Vehicle() = default;
+
+void Vehicle::Init()
+{
+    float scaleFactor = 2;
+    auto* vehicle = node_->CreateComponent<RaycastVehicle>();
+    vehicle->Init();
+    auto* hullBody = node_->GetComponent<RigidBody>();
+    hullBody->SetMass(1350.0f);
+    hullBody->SetLinearDamping(0.2f); // Some air resistance
+    hullBody->SetAngularDamping(0.5f);
+    hullBody->SetCollisionLayer(1);
+    // This function is called only from the main program when initially creating the vehicle, not on scene load
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* hullObject = node_->CreateComponent<StaticModel>();
+    // Setting-up collision shape
+    auto* hullColShape = node_->CreateComponent<CollisionShape>();
+
+    Vector3 v3BoxExtents = Vector3::ONE;
+//    hullColShape->SetBox(v3BoxExtents);
+    node_->SetScale(Vector3(1.0f, 1.0f, 1.0f) * scaleFactor);
+    hullObject->SetModel(cache->GetResource<Model>("Models/prius.mdl"));
+    hullObject->SetMaterial(cache->GetResource<Material>("Materials/Blue.xml"));
+    hullObject->SetCastShadows(true);
+    hullColShape->SetConvexHull(hullObject->GetModel());
+    float connectionHeight = -0.2111f * scaleFactor;
+    bool isFrontWheel = true;
+    Vector3 wheelDirection(0, -1, 0);
+    Vector3 wheelAxle(-1, 0, 0);
+    // We use not scaled coordinates here as everything will be scaled.
+    // Wheels are on bottom at edges of the chassis
+    // Note we don't set wheel nodes as children of hull (while we could) to avoid scaling to affect them.
+    float wheelX = 0.55f * scaleFactor;//CHASSIS_WIDTH / 2.0f - wheelWidth_;
+    // Front left-0.6f, -0.42f, 0.97f
+    float z = 0.97f * scaleFactor; //connectionHeight, 1.5f - GetWheelRadius() * 2.0f
+    // Front left
+    connectionPoints_[0] = Vector3(-wheelX, connectionHeight, z);
+    // Front right
+    connectionPoints_[1] = Vector3(wheelX + 0.07f, connectionHeight, z);
+    // Back left
+    connectionPoints_[2] = Vector3(-wheelX, connectionHeight, -z);
+    // Back right
+    connectionPoints_[3] = Vector3(wheelX + 0.07f, connectionHeight, -z);
+    const Color LtBrown(0.972f, 0.780f, 0.412f);
+    for (int id = 0; id < sizeof(connectionPoints_) / sizeof(connectionPoints_[0]); id++)
+    {
+        Node* wheelNode = GetScene()->CreateChild();
+
+        Vector3 connectionPoint = connectionPoints_[id];
+        // Front wheels are at front (z > 0)
+        // back wheels are at z < 0
+        // Setting rotation according to wheel position
+        bool isFrontWheel = connectionPoints_[id].z_ > 0.0f;
+        wheelNode->SetRotation(connectionPoint.x_ >= 0.0 ? Quaternion(0.0f, 0.0f, -90.0f) : Quaternion(0.0f, 0.0f, 90.0f));
+        wheelNode->SetWorldPosition(node_->GetWorldPosition() + node_->GetWorldRotation() * connectionPoints_[id]);
+        vehicle->AddWheel(wheelNode, wheelDirection, wheelAxle, suspensionRestLength_, wheelRadius_, isFrontWheel);
+        vehicle->SetWheelSuspensionStiffness(id, suspensionStiffness_);
+        vehicle->SetWheelDampingRelaxation(id, suspensionDamping_);
+        vehicle->SetWheelDampingCompression(id, suspensionCompression_);
+        vehicle->SetWheelFrictionSlip(id, wheelFriction_);
+        vehicle->SetWheelRollInfluence(id, rollInfluence_);
+
+        double mull = 0.6 * scaleFactor;
+        wheelNode->SetScale(Vector3(0.8f * mull, 0.3f * mull, 0.8f * mull));
+        auto* pWheel = wheelNode->CreateComponent<StaticModel>();
+        pWheel->SetModel(cache->GetResource<Model>("Models/Cylinder.mdl"));
+        pWheel->SetMaterial(cache->GetResource<Material>("Materials/Stone.xml"));
+        pWheel->SetCastShadows(true);
+        CreateEmitter(connectionPoints_[id]);
+    }
+    emittersCreated = true;
+    vehicle->ResetWheels();
+}
+
+void Vehicle::CreateEmitter(Vector3 place)
+{
+    auto* cache = GetSubsystem<ResourceCache>();
+    Node* emitter = GetScene()->CreateChild();
+    emitter->SetWorldPosition(node_->GetWorldPosition() + node_->GetWorldRotation() * place + Vector3(0, -wheelRadius_, 0));
+    auto* particleEmitter = emitter->CreateComponent<ParticleEmitter>();
+    particleEmitter->SetEffect(cache->GetResource<ParticleEffect>("Particle/Dust.xml"));
+    particleEmitter->SetEmitting(false);
+    particleEmitterNodeList_.Push(emitter);
+    emitter->SetTemporary(true);
+}
+
+/// Applying attributes
 void Vehicle::ApplyAttributes()
 {
-    // This function is called on each Serializable after the whole scene has been loaded. Reacquire wheel nodes from ID's
-    // as well as all required physics components
-    Scene* scene = GetScene();
-
-    frontLeft_ = scene->GetNode(frontLeftID_);
-    frontRight_ = scene->GetNode(frontRightID_);
-    rearLeft_ = scene->GetNode(rearLeftID_);
-    rearRight_ = scene->GetNode(rearRightID_);
-    hullBody_ = node_->GetComponent<RigidBody>();
-
-    GetWheelComponents();
+    auto* vehicle = node_->GetOrCreateComponent<RaycastVehicle>();
+    if (emittersCreated)
+        return;
+    for (const auto& connectionPoint : connectionPoints_)
+    {
+        CreateEmitter(connectionPoint);
+    }
+    emittersCreated = true;
 }
 
+#include "Urho3D/Input/Input.h"
 void Vehicle::FixedUpdate(float timeStep)
 {
     float newSteering = 0.0f;
     float accelerator = 0.0f;
-
+    bool brake = false;
+    auto* vehicle = node_->GetComponent<RaycastVehicle>();
     // Read controls
     if (controls_.buttons_ & CTRL_LEFT)
+    {
         newSteering = -1.0f;
+    }
     if (controls_.buttons_ & CTRL_RIGHT)
+    {
         newSteering = 1.0f;
+    }
     if (controls_.buttons_ & CTRL_FORWARD)
+    {
         accelerator = 1.0f;
+    }
     if (controls_.buttons_ & CTRL_BACK)
+    {
         accelerator = -0.5f;
-
+    }
+    if (controls_.buttons_ & CTRL_BRAKE)
+    {
+        brake = true;
+    }
     // When steering, wake up the wheel rigidbodies so that their orientation is updated
     if (newSteering != 0.0f)
     {
-        frontLeftBody_->Activate();
-        frontRightBody_->Activate();
-        steering_ = steering_ * 0.95f + newSteering * 0.05f;
+        SetSteering(GetSteering() * 0.95f + newSteering * 0.05f);
     }
     else
-        steering_ = steering_ * 0.8f + newSteering * 0.2f;
-
-    // Set front wheel angles
-    Quaternion steeringRot(0, steering_ * MAX_WHEEL_ANGLE, 0);
-    frontLeftAxis_->SetOtherAxis(steeringRot * Vector3::LEFT);
-    frontRightAxis_->SetOtherAxis(steeringRot * Vector3::RIGHT);
-
-    Quaternion hullRot = hullBody_->GetRotation();
-    if (accelerator != 0.0f)
     {
-        // Torques are applied in world space, so need to take the vehicle & wheel rotation into account
-        Vector3 torqueVec = Vector3(ENGINE_POWER * accelerator, 0.0f, 0.0f);
-
-        frontLeftBody_->ApplyTorque(hullRot * steeringRot * torqueVec);
-        frontRightBody_->ApplyTorque(hullRot * steeringRot * torqueVec);
-        rearLeftBody_->ApplyTorque(hullRot * torqueVec);
-        rearRightBody_->ApplyTorque(hullRot * torqueVec);
+        SetSteering(GetSteering() * 0.8f + newSteering * 0.2f);
     }
+    // Set front wheel angles
+    vehicleSteering_ = steering_;
+    int wheelIndex = 0;
+    vehicle->SetSteeringValue(wheelIndex, vehicleSteering_);
+    wheelIndex = 1;
+    vehicle->SetSteeringValue(wheelIndex, vehicleSteering_);
+    // apply forces
+    engineForce_ = maxEngineForce_ * accelerator;
+    // 2x wheel drive
 
-    // Apply downforce proportional to velocity
-    Vector3 localVelocity = hullRot.Inverse() * hullBody_->GetLinearVelocity();
-    hullBody_->ApplyForce(hullRot * Vector3::DOWN * Abs(localVelocity.z_) * DOWN_FORCE);
+    for (int i = 0; i < vehicle->GetNumWheels(); i++)
+    {
+
+        if (GetSubsystem<Input>()->GetKeyDown(KEY_SPACE))
+        {
+            vehicle->SetBrake(i, brakingForce_);
+            vehicle->SetEngineForce(i, 0);
+        }
+        else
+        {
+            vehicle->SetBrake(i, 0.0f);
+            vehicle->SetEngineForce(i, engineForce_);
+        }
+    }
 }
 
-void Vehicle::Init()
+void Vehicle::PostUpdate(float timeStep)
 {
-    // This function is called only from the main program when initially creating the vehicle, not on scene load
-    ResourceCache* cache = GetSubsystem<ResourceCache>();
-
-    StaticModel* hullObject = node_->CreateComponent<StaticModel>();
-    hullBody_ = node_->CreateComponent<RigidBody>();
-    CollisionShape* hullShape = node_->CreateComponent<CollisionShape>();
-//    hullBody_->SetGravityOverride(Vector3(0.0f, -9.0f, 0.0f));
-    node_->SetScale(Vector3(2.0f, 2.0f, 2.0f));
-    hullObject->SetModel(cache->GetResource<Model>("Models/Prius.mdl"));
-    hullObject->SetMaterial(cache->GetResource<Material>("Materials/Stone.xml"));
-    hullObject->SetCastShadows(true);
-//    hullShape->SetBox(Vector3(1.2f, 1.0f, 3.1f));
-    hullShape->SetConvexHull(cache->GetResource<Model>("Models/Prius.mdl"));
-    hullBody_->SetMass(1350.0f);
-    hullBody_->SetLinearDamping(0.2); // Some air resistance
-    hullBody_->SetAngularDamping(0.5f);
-    hullBody_->SetCollisionLayer(1);
-
-    InitWheel("FrontLeft", Vector3(-0.6f, -0.42f, 0.97f), frontLeft_, frontLeftID_);
-    InitWheel("FrontRight", Vector3(0.6f, -0.42f, 0.97f), frontRight_, frontRightID_);
-    InitWheel("RearLeft", Vector3(-0.6f, -0.42f, -0.99f), rearLeft_, rearLeftID_);
-    InitWheel("RearRight", Vector3(0.6f, -0.42f, -0.99f), rearRight_, rearRightID_);
-
-    GetWheelComponents();
-}
-
-void Vehicle::InitWheel(const String& name, const Vector3& offset, WeakPtr<Node>& wheelNode, unsigned& wheelNodeID)
-{
-    ResourceCache* cache = GetSubsystem<ResourceCache>();
-
-    // Note: do not parent the wheel to the hull scene node. Instead create it on the root level and let the physics
-    // constraint keep it together
-    wheelNode = GetScene()->CreateChild(name);
-    wheelNode->SetPosition(node_->LocalToWorld(offset));
-    wheelNode->SetRotation(node_->GetRotation() * (offset.x_ >= 0.0 ? Quaternion(0.0f, 0.0f, -90.0f) :
-        Quaternion(0.0f, 0.0f, 90.0f)));
-    double mull = 0.6 * 2;
-    wheelNode->SetScale(Vector3(0.8f * mull, 0.3f * mull, 0.8f * mull));
-    // Remember the ID for serialization
-    wheelNodeID = wheelNode->GetID();
-
-    StaticModel* wheelObject = wheelNode->CreateComponent<StaticModel>();
-    RigidBody* wheelBody = wheelNode->CreateComponent<RigidBody>();
-    CollisionShape* wheelShape = wheelNode->CreateComponent<CollisionShape>();
-    Constraint* wheelConstraint = wheelNode->CreateComponent<Constraint>();
-
-    wheelObject->SetModel(cache->GetResource<Model>("Models/Cylinder.mdl"));
-    wheelObject->SetMaterial(cache->GetResource<Material>("Materials/Stone.xml"));
-    wheelObject->SetCastShadows(true);
-    wheelShape->SetSphere(1.0f);
-    wheelBody->SetFriction(1.0f);
-    wheelBody->SetMass(3.0f);
-    wheelBody->SetLinearDamping(0.5f); // Some air resistance
-    wheelBody->SetAngularDamping(0.75f); // Could also use rolling friction
-    wheelBody->SetCollisionLayer(1);
-    wheelConstraint->SetConstraintType(CONSTRAINT_HINGE);
-    wheelConstraint->SetOtherBody(GetComponent<RigidBody>()); // Connect to the hull body
-    wheelConstraint->SetWorldPosition(wheelNode->GetPosition()); // Set constraint's both ends at wheel's location
-    wheelConstraint->SetAxis(Vector3::UP); // Wheel rotates around its local Y-axis
-    wheelConstraint->SetOtherAxis(offset.x_ >= 0.0 ? Vector3::RIGHT : Vector3::LEFT); // Wheel's hull axis points either left or right
-    wheelConstraint->SetLowLimit(Vector2(-180.0f, 0.0f)); // Let the wheel rotate freely around the axis
-    wheelConstraint->SetHighLimit(Vector2(180.0f, 0.0f));
-    wheelConstraint->SetDisableCollision(true); // Let the wheel intersect the vehicle hull
-}
-
-void Vehicle::GetWheelComponents()
-{
-    frontLeftAxis_ = frontLeft_->GetComponent<Constraint>();
-    frontRightAxis_ = frontRight_->GetComponent<Constraint>();
-    frontLeftBody_ = frontLeft_->GetComponent<RigidBody>();
-    frontRightBody_ = frontRight_->GetComponent<RigidBody>();
-    rearLeftBody_ = rearLeft_->GetComponent<RigidBody>();
-    rearRightBody_ = rearRight_->GetComponent<RigidBody>();
+    auto* vehicle = node_->GetComponent<RaycastVehicle>();
+    auto* vehicleBody = node_->GetComponent<RigidBody>();
+    Vector3 velocity = vehicleBody->GetLinearVelocity();
+    Vector3 accel = (velocity - prevVelocity_) / timeStep;
+    float planeAccel = Vector3(accel.x_, 0.0f, accel.z_).Length();
+    for (int i = 0; i < vehicle->GetNumWheels(); i++)
+    {
+        Node* emitter = particleEmitterNodeList_[i];
+        auto* particleEmitter = emitter->GetComponent<ParticleEmitter>();
+        if (vehicle->WheelIsGrounded(i) && (vehicle->GetWheelSkidInfoCumulative(i) < 0.9f || vehicle->GetBrake(i) > 2.0f ||
+            planeAccel > 15.0f))
+        {
+            particleEmitterNodeList_[i]->SetWorldPosition(vehicle->GetContactPosition(i));
+            if (!particleEmitter->IsEmitting())
+            {
+                particleEmitter->SetEmitting(true);
+            }
+            URHO3D_LOGDEBUG("GetWheelSkidInfoCumulative() = " +
+                            String(vehicle->GetWheelSkidInfoCumulative(i)) + " " +
+                            String(vehicle->GetMaxSideSlipSpeed()));
+            /* TODO: Add skid marks here */
+        }
+        else if (particleEmitter->IsEmitting())
+        {
+            particleEmitter->SetEmitting(false);
+        }
+    }
+    prevVelocity_ = velocity;
 }

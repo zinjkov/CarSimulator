@@ -139,8 +139,8 @@ void Urho3DBase::CreateScene()
             objectNode->SetRotation(Quaternion(Vector3::UP, terrain->GetNormal(position)));
             objectNode->SetScale(3.0f);
             StaticModel* object = objectNode->CreateComponent<StaticModel>();
-            object->SetModel(cache->GetResource<Model>("Models/Mushroom.mdl"));
-            object->SetMaterial(cache->GetResource<Material>("Materials/Mushroom.xml"));
+            object->SetModel(cache->GetResource<Model>("Models/Jack.mdl"));
+            object->SetMaterial(cache->GetResource<Material>("Materials/Stone.xml"));
             object->SetCastShadows(true);
 
             RigidBody* body = objectNode->CreateComponent<RigidBody>();
@@ -198,8 +198,8 @@ void Urho3DBase::HandleUpdate(StringHash eventType, VariantMap &eventData)
 
                 // Add yaw & pitch from the mouse motion or touch input. Used only for the camera, does not affect motion
 
-                    vehicle_->controls_.yaw_ += (float)input->GetMouseMoveX() * YAW_SENSITIVITY;
-                    vehicle_->controls_.pitch_ += (float)input->GetMouseMoveY() * YAW_SENSITIVITY;
+                    vehicle_->controls_.yaw_ += (float)input->GetMouseMoveX() * YAW_SENSITIVITY* 10;
+                    vehicle_->controls_.pitch_ += (float)input->GetMouseMoveY() * YAW_SENSITIVITY * 10;
 
                 // Limit pitch
                 vehicle_->controls_.pitch_ = Clamp(vehicle_->controls_.pitch_, 0.0f, 80.0f);
@@ -234,6 +234,7 @@ void Urho3DBase::HandlePostUpdate(StringHash eventType, VariantMap &eventData)
             return;
 
         Node* vehicleNode = vehicle_->GetNode();
+        Input* input = GetSubsystem<Input>();
 
         // Physics update has completed. Position camera behind vehicle
         Quaternion dir(vehicleNode->GetRotation().YawAngle(), Vector3::UP);
@@ -253,7 +254,24 @@ void Urho3DBase::HandlePostUpdate(StringHash eventType, VariantMap &eventData)
             cameraTargetPos = cameraStartPos + cameraRay.direction_ * (result.distance_ - 0.5f);
 
         cameraNode_->SetPosition(cameraTargetPos);
+
         cameraNode_->SetRotation(dir);
+        if (input->GetMouseButtonPress(MOUSEB_RIGHT)) {
+            const float MOUSE_SENSITIVITY = 0.5f;
+
+                    // Use this frame's mouse motion to adjust camera node yaw and pitch. Clamp the pitch between -90 and 90 degrees
+            IntVector2 mouseMove = input->GetMouseMove();
+            yaw_ = cameraNode_->GetRotation().YawAngle();
+            pitch_ = cameraNode_->GetRotation().PitchAngle();
+            yaw_ += MOUSE_SENSITIVITY * mouseMove.x_;
+            pitch_ += MOUSE_SENSITIVITY * mouseMove.y_;
+            pitch_ = Clamp(pitch_, -90.0f, 90.0f);
+
+            // Construct new orientation for the camera scene node from yaw and pitch. Roll is fixed to zero
+            cameraNode_->SetRotation(Quaternion(pitch_, yaw_, 0.0f));
+
+
+        }
 }
 
 void Urho3DBase::OnTimeout()

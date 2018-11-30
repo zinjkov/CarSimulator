@@ -12,6 +12,7 @@ mainwindow::mainwindow(QWidget *parent) : QMainWindow(parent), centralWidget(nul
 {
     centralWidget = new Urho3DBase("", new Urho3D::Context(), this);
     setCentralWidget(centralWidget);
+    resize(QSize(768, 1024));
     centralWidget->Setup();
     centralWidget->Start();
 }
